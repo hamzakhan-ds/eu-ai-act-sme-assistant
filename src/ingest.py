@@ -1,7 +1,9 @@
 import csv
+import re
 from pathlib import Path
 
-from langchain_community.document_loaders import PyPDFLoader
+import pdfplumber
+from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -11,64 +13,119 @@ SOURCES_CSV = PROJECT_ROOT / "data" / "sources.csv"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 
+CONSOLIDATED_HEADER = re.compile(r"^\s*0\d{4}R\d{4}\s+—\s+EN\s+—.*$", re.MULTILINE)
+# Official Journal footer line, e.g. "ELI: http://data.europa.eu/eli/reg/2026/1744/oj 1/41"
+OJ_FOOTER = re.compile(r"^\s*ELI:\s*http\S+.*$", re.MULTILINE)
+
+AMENDMENT_MARKER = re.compile(r"[▼►][A-Z]\d*|◄")
+
+PAGE_NUMBER_LINE = re.compile(r"^\s*\d{1,3}\s*$", re.MULTILINE)
+MULTI_SPACE = re.compile(r"[ \t]{2,}")
+EXTRA_BLANK_LINES = re.compile(r"\n{3,}")
+
+
+LEFTOVER_NOISE = re.compile(r"[▼►◄]|— EN —|ELI: http")
+
+
+def clean_text(text):
+    """Remove headers, footers, amendment markers and extra whitespace."""
+    text = CONSOLIDATED_HEADER.sub("", text)
+    text = OJ_FOOTER.sub("", text)
+    text = AMENDMENT_MARKER.sub("", text)
+    text = PAGE_NUMBER_LINE.sub("", text)
+    text = MULTI_SPACE.sub(" ", text)
+    text = EXTRA_BLANK_LINES.sub("\n\n", text)
+    return text.strip()
+
+
 def load_sources():
+    """Read sources.csv and return one dictionary per document."""
     with open(SOURCES_CSV, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
-def load_documents(sources):
-    pages=[]
+
+def load_pages(sources):
+    """Extract and clean the text of every PDF page, with metadata."""
+    pages = []
     for src in sources:
-        pdf_path= RAW_DIR / src["filename"]
+        pdf_path = RAW_DIR / src["filename"]
         if not pdf_path.exists():
             raise FileNotFoundError(f"Listed in sources.csv but missing: {pdf_path}")
 
-        doc_pages = PyPDFLoader(str(pdf_path)).load()
-        for page in doc_pages:
-            page.metadata.update(
-                {
-                    "doc_id": src["doc_id"],
-                    "title": src["title"],
-                    "source_type": src["source_type"],
-                    "url": src["url"],
-                    "page_number": page.metadata.get("page", 0) + 1,
-                }
-            )
-        print(f"Loaded {len(doc_pages):>3} pages from {src['filename']}")
-        pages.extend(doc_pages)
+        page_count = 0
+        with pdfplumber.open(pdf_path) as pdf:
+            for index, pdf_page in enumerate(pdf.pages):
+                text = clean_text(pdf_page.extract_text() or "")
+                pdf_page.close()  # free memory after each page
+                if not text:
+                    continue
+                pages.append(
+                    Document(
+                        page_content=text,
+                        metadata={
+                            "doc_id": src["doc_id"],
+                            "filename": src["filename"],
+                            "title": src["title"],
+                            "source_type": src["source_type"],
+                            "url": src["url"],
+                            "page_number": index + 1,  # PDF page, counted from 1
+                        },
+                    )
+                )
+                page_count += 1
+        print(f"Loaded {page_count:>3} pages from {src['filename']}")
     return pages
 
-def split_documents(pages):
+
+def split_pages(pages):
+    """Split each page into overlapping chunks."""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
-        add_start_index=True,
     )
     return splitter.split_documents(pages)
 
-def main():
+
+def build_chunks():
+    """Run the full pipeline: sources -> cleaned pages -> chunks."""
     sources = load_sources()
-    pages = load_documents(sources)
+    pages = load_pages(sources)
+    return pages, split_pages(pages)
 
-    print(f"\nTotal pages: {len(pages)}")
-    empty_pages = [p for p in pages if not p.page_content.strip()]
-    print(f"Pages with no text: {len(empty_pages)}")
 
-    chunks = split_documents(pages)
-    average = sum(len(c.page_content) for c in chunks)/len(chunks)
-    print(f"Total chunks: {len(empty_pages)}")
+def show_page(pages, doc_id, page_number, length=400):
+    """Print the start of one cleaned page, to check the cleaning."""
+    for page in pages:
+        if page.metadata["doc_id"] == doc_id and page.metadata["page_number"] == page_number:
+            print(f"\n--- Doc {doc_id}, page {page_number} (cleaned) ---")
+            print(page.page_content[:length])
+            return
+    print(f"\n--- Doc {doc_id}, page {page_number}: not found ---")
+
+
+def main():
+    pages, chunks = build_chunks()
+
+    print(f"\nTotal pages with text: {len(pages)}")
+    print(f"Total chunks: {len(chunks)}")
+    average = sum(len(c.page_content) for c in chunks) / len(chunks)
     print(f"Average chunk length: {average:.0f} characters")
 
-    ai_act_pages = [p for p in pages if p.metadata["doc_id"]=="01"]
-    sample = ai_act_pages[9].page_content
-    print("\n AI Act, page 10: first 500 characters")
-    print(sample[:500])
-    print("\n AI Act, page 10: last 300 characters")
-    print(sample[-300:])
+    leftover = [c for c in chunks if LEFTOVER_NOISE.search(c.page_content)]
+    print(f"Chunks with leftover noise: {len(leftover)}")
+    if leftover:
+        print("First example of leftover noise:")
+        print(leftover[0].metadata)
+        print(leftover[0].page_content[:300])
 
-    print("\n Example Chunk")
-    example = chunks[200]
-    print(example.metadata)
-    print(example.page_content)
+    show_page(pages, "01", 10)
+    show_page(pages, "02", 1)
+    show_page(pages, "02", 5)
+    show_page(pages, "04", 21)
+
+    print("\n--- Example chunk metadata ---")
+    print(chunks[200].metadata)
+
 
 if __name__ == "__main__":
     main()
