@@ -13,24 +13,35 @@ SOURCES_CSV = PROJECT_ROOT / "data" / "sources.csv"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 
-CONSOLIDATED_HEADER = re.compile(r"^\s*0\d{4}R\d{4}\s+—\s+EN\s+—.*$", re.MULTILINE)
-# Official Journal footer line, e.g. "ELI: http://data.europa.eu/eli/reg/2026/1744/oj 1/41"
-OJ_FOOTER = re.compile(r"^\s*ELI:\s*http\S+.*$", re.MULTILINE)
 
+CONSOLIDATED_HEADER = re.compile(r"^\s*0\d{4}R\d{4}\s+—\s+EN\s+—.*$", re.MULTILINE)
+
+OJ_FOOTER = re.compile(r"^\s*ELI:\s*http\S+\s+\d+/\d+\s*$", re.MULTILINE)
+
+OJ_HEADER = re.compile(
+    r"^\s*(Official Journal EN|of the European Union L series|EN"
+    r"|OJ L, \d{1,2}\.\d{1,2}\.\d{4}|\d{4}/\d{1,4} \d{1,2}\.\d{1,2}\.\d{4})\s*$",
+    re.MULTILINE,
+)
 AMENDMENT_MARKER = re.compile(r"[▼►][A-Z]\d*|◄")
 
 PAGE_NUMBER_LINE = re.compile(r"^\s*\d{1,3}\s*$", re.MULTILINE)
 MULTI_SPACE = re.compile(r"[ \t]{2,}")
 EXTRA_BLANK_LINES = re.compile(r"\n{3,}")
 
-
-LEFTOVER_NOISE = re.compile(r"[▼►◄]|— EN —|ELI: http")
+NOISE_CHECKS = {
+    "consolidated header": re.compile(r"— EN — \d{2}\.\d{2}\.\d{4}"),
+    "OJ footer": OJ_FOOTER,
+    "OJ header": OJ_HEADER,
+    "amendment markers": re.compile(r"[▼►◄]"),
+}
 
 
 def clean_text(text):
     """Remove headers, footers, amendment markers and extra whitespace."""
     text = CONSOLIDATED_HEADER.sub("", text)
     text = OJ_FOOTER.sub("", text)
+    text = OJ_HEADER.sub("", text)
     text = AMENDMENT_MARKER.sub("", text)
     text = PAGE_NUMBER_LINE.sub("", text)
     text = MULTI_SPACE.sub(" ", text)
@@ -111,20 +122,18 @@ def main():
     average = sum(len(c.page_content) for c in chunks) / len(chunks)
     print(f"Average chunk length: {average:.0f} characters")
 
-    leftover = [c for c in chunks if LEFTOVER_NOISE.search(c.page_content)]
-    print(f"Chunks with leftover noise: {len(leftover)}")
-    if leftover:
-        print("First example of leftover noise:")
-        print(leftover[0].metadata)
-        print(leftover[0].page_content[:300])
+    print("\nNoise check (each should be 0):")
+    for name, pattern in NOISE_CHECKS.items():
+        found = [c for c in chunks if pattern.search(c.page_content)]
+        print(f"  {name}: {len(found)}")
+        if found:
+            example = found[0]
+            print(f"    Example from doc {example.metadata['doc_id']}, page {example.metadata['page_number']}:")
+            print("    " + example.page_content[:200].replace("\n", " | "))
 
-    show_page(pages, "01", 10)
     show_page(pages, "02", 1)
     show_page(pages, "02", 5)
-    show_page(pages, "04", 21)
-
-    print("\n--- Example chunk metadata ---")
-    print(chunks[200].metadata)
+    show_page(pages, "02", 20)
 
 
 if __name__ == "__main__":
