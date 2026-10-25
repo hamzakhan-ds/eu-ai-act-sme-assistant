@@ -6,13 +6,14 @@ import pdfplumber
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
 SOURCES_CSV = PROJECT_ROOT / "data" / "sources.csv"
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
-
+TABLE_DOCS= {"05"}
 
 CONSOLIDATED_HEADER = re.compile(r"^\s*0\d{4}R\d{4}\s+—\s+EN\s+—.*$", re.MULTILINE)
 
@@ -23,6 +24,8 @@ OJ_HEADER = re.compile(
     r"|OJ L, \d{1,2}\.\d{1,2}\.\d{4}|\d{4}/\d{1,4} \d{1,2}\.\d{1,2}\.\d{4})\s*$",
     re.MULTILINE,
 )
+COMMISSION_FOOTER = re.compile(r"^\s*EN EN\s*$", re.MULTILINE)
+
 AMENDMENT_MARKER = re.compile(r"[▼►][A-Z]\d*|◄")
 
 PAGE_NUMBER_LINE = re.compile(r"^\s*\d{1,3}\s*$", re.MULTILINE)
@@ -33,6 +36,7 @@ NOISE_CHECKS = {
     "consolidated header": re.compile(r"— EN — \d{2}\.\d{2}\.\d{4}"),
     "OJ footer": OJ_FOOTER,
     "OJ header": OJ_HEADER,
+    "Commission footer": COMMISSION_FOOTER,
     "amendment markers": re.compile(r"[▼►◄]"),
 }
 
@@ -42,6 +46,7 @@ def clean_text(text):
     text = CONSOLIDATED_HEADER.sub("", text)
     text = OJ_FOOTER.sub("", text)
     text = OJ_HEADER.sub("", text)
+    text = COMMISSION_FOOTER.sub("", text)
     text = AMENDMENT_MARKER.sub("", text)
     text = PAGE_NUMBER_LINE.sub("", text)
     text = MULTI_SPACE.sub(" ", text)
@@ -49,14 +54,34 @@ def clean_text(text):
     return text.strip()
 
 
+def extract_page_text(pdf_page, use_tables):
+    
+    tables = pdf_page.find_tables() if use_tables else []
+    if not tables:
+        return pdf_page.extract_text() or "", 0
+
+    outside = pdf_page
+    for table in tables:
+        outside = outside.outside_bbox(table.bbox)
+    parts = [outside.extract_text() or ""]
+
+    for table in tables:
+        rows = []
+        for row in table.extract():
+            cells = [" ".join((cell or "").split()) for cell in row]
+            if any(cells):
+                rows.append(" | ".join(cells))
+        parts.append("\n".join(rows))
+
+    return "\n\n".join(parts), len(tables)
+
+
 def load_sources():
-    """Read sources.csv and return one dictionary per document."""
     with open(SOURCES_CSV, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
 def load_pages(sources):
-    """Extract and clean the text of every PDF page, with metadata."""
     pages = []
     for src in sources:
         pdf_path = RAW_DIR / src["filename"]
@@ -64,9 +89,12 @@ def load_pages(sources):
             raise FileNotFoundError(f"Listed in sources.csv but missing: {pdf_path}")
 
         page_count = 0
+        table_count = 0
         with pdfplumber.open(pdf_path) as pdf:
             for index, pdf_page in enumerate(pdf.pages):
-                text = clean_text(pdf_page.extract_text() or "")
+                raw_text, tables_found = extract_page_text(pdf_page, use_tables=src["doc_id"] in TABLE_DOCS)
+                table_count += tables_found
+                text = clean_text(raw_text)
                 pdf_page.close()  # free memory after each page
                 if not text:
                     continue
@@ -84,7 +112,7 @@ def load_pages(sources):
                     )
                 )
                 page_count += 1
-        print(f"Loaded {page_count:>3} pages from {src['filename']}")
+        print(f"Loaded {page_count:>3} pages ({table_count:>2} tables) from {src['filename']}")
     return pages
 
 
@@ -104,7 +132,7 @@ def build_chunks():
     return pages, split_pages(pages)
 
 
-def show_page(pages, doc_id, page_number, length=400):
+def show_page(pages, doc_id, page_number, length=600):
     """Print the start of one cleaned page, to check the cleaning."""
     for page in pages:
         if page.metadata["doc_id"] == doc_id and page.metadata["page_number"] == page_number:
@@ -131,9 +159,8 @@ def main():
             print(f"    Example from doc {example.metadata['doc_id']}, page {example.metadata['page_number']}:")
             print("    " + example.page_content[:200].replace("\n", " | "))
 
-    show_page(pages, "02", 1)
-    show_page(pages, "02", 5)
-    show_page(pages, "02", 20)
+    show_page(pages, "05", 1)
+    show_page(pages, "05", 5)
 
 
 if __name__ == "__main__":
