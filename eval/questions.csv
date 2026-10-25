@@ -1,0 +1,11 @@
+id,category,question,expected
+1,Definition,What is the definition of an AI system under the AI Act?,Definition from the AI Act and the Commission guidelines on the AI system definition
+2,Prohibition,Can a company use AI for social scoring of people?,Explains the social scoring prohibition and its conditions
+3,Prohibition,Is real-time facial recognition by police in public spaces allowed?,Explains the prohibition and its narrow exceptions
+4,Penalties,What is the maximum fine for using a prohibited AI practice?,States the highest penalty tier from the AI Act
+5,Transparency,Do I need to label deepfakes?,Explains the deepfake disclosure obligation and its exceptions
+6,Obligations,What obligations do deployers of high-risk AI systems have?,Lists deployer obligations from the AI Act
+7,Dates,When did the prohibitions on AI practices start to apply?,Gives the application date of the prohibitions
+8,Scope,Does the AI Act apply to AI systems used only for military purposes?,Explains the exclusion from scope
+9,Unanswerable,How much does a conformity assessment cost for an SME?,Should say the sources do not contain this
+10,Off-topic,What is the minimum wage in Ireland?,Should decline as outside its sources
